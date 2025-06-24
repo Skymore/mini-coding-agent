@@ -2,16 +2,39 @@
 
 A modern multi-agent coding system built with LangGraph, designed to assist with software development tasks through intelligent agent collaboration.
 
-## 🎯 Project Purpose
+## 🎯 Project Purpose & Learning Objectives
 
-This is an **educational showcase** designed to help developers understand:
-- How coding agents make decisions and route tasks
-- The interaction between different specialized AI agents
-- Tool calling and execution in agent systems
-- Real-time streaming of agent thoughts and actions
-- Session management and conversation history
+This **educational showcase** is designed to help developers understand key aspects of AI agent architectures and workflows, providing a practical foundation before tackling more complex systems. Specifically, this project highlights:
 
-Perfect for learning about AI agent architecture before building more complex systems!
+### 1. **Agent Specialization**
+
+* Specialized roles assigned to different AI agents.
+* Controlled tool access tailored per agent type.
+* Domain-specific system prompts guiding agent behavior.
+
+### 2. **Intelligent Task Routing**
+
+* Decision-making powered by LLM for optimal task allocation.
+* Contextual analysis to select appropriate expert agents.
+* Effective fallback strategies to handle edge cases gracefully.
+
+### 3. **Tool Integration and Execution**
+
+* Integration of real-world development tools within agent workflows.
+* Operations such as file system manipulation and command execution.
+* Robust tool result processing with comprehensive error handling.
+
+### 4. **Session Management and Context Preservation**
+
+* Stateful conversation management with full history tracking.
+* Effective serialization and deserialization of conversation data.
+* Preservation and utilization of context across multiple interactions.
+
+### 5. **Real-time Streaming and Feedback**
+
+* Implementation of server-sent events (SSE) for real-time updates.
+* Progressive and dynamic UI feedback during agent operations.
+* Enhanced transparency through immediate reporting of agent actions and decisions.
 
 ## 🌟 Features
 
@@ -207,35 +230,6 @@ Building a robust multi-agent system involves more than just wiring up an LLM. H
 ### 6. Performance - LLM Client Instantiation
 - **Problem**: The system was creating a new `ChatOpenAI` client instance for every single LLM call.
 - **Solution**: We leveraged Python's `functools.lru_cache` decorator on the `create_llm_client` function to reuse clients, significantly reducing instantiation overhead.
-
-## 🎓 Learning Objectives
-
-This project demonstrates:
-
-### 1. **Agent Specialization**
-- How different agents can have specialized roles
-- Tool access control per agent type
-- Domain-specific system prompts
-
-### 2. **Intelligent Routing**
-- LLM-based decision making for task routing
-- Context analysis and expert selection
-- Fallback handling for edge cases
-
-### 3. **Tool Integration**
-- Real development tools integrated with AI agents
-- File system operations and command execution
-- Tool result processing and error handling
-
-### 4. **Session Management**
-- Stateful conversations with complete history
-- Message serialization and deserialization
-- Context preservation across interactions
-
-### 5. **Real-time Streaming**
-- Server-sent events for live updates
-- Progressive UI updates as agents work
-- Immediate feedback and transparency
 
 ## 🛠️ Customization
 
