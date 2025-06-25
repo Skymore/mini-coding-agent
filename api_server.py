@@ -89,7 +89,7 @@ class ModelListResponse(BaseModel):
 def get_available_models():
     """Load available models list from environment variables"""
     # Read models list from environment variable
-    models_str = os.getenv("AVAILABLE_MODELS", "openai/gpt-4o,openai/gpt-4o-mini,anthropic/claude-3.5-sonnet")
+    models_str = os.getenv("AVAILABLE_MODELS", "openai/gpt-4o,openai/gpt-4o-mini,anthropic/claude-sonnet-4")
     model_ids = [model.strip() for model in models_str.split(",")]
     
     # Build models list
@@ -260,6 +260,108 @@ async def health_check():
 @app.get("/experts")
 async def get_experts():
     return {"experts": EXPERT_DEFINITIONS}
+
+@app.get("/file/view")
+async def view_file(file_path: str):
+    """
+    View file content
+    """
+    try:
+        from pathlib import Path
+
+        # Security check: search for the file in allowed locations
+        search_dirs = [
+            Path.cwd(),
+            Path.cwd() / "output",
+            Path.cwd() / "test_sandbox"
+        ]
+        
+        found_path: Optional[Path] = None
+        
+        # To handle file paths from different OS, normalize them
+        normalized_file_path = Path(file_path)
+
+        # 1. Check for absolute path first
+        if normalized_file_path.is_absolute() and normalized_file_path.exists():
+            found_path = normalized_file_path
+        
+        # 2. If not absolute, search in the standard directories
+        if not found_path:
+            for directory in search_dirs:
+                candidate = directory / normalized_file_path
+                if candidate.exists() and candidate.is_file():
+                    found_path = candidate
+                    break
+        
+        # 3. If still not found, search recursively inside 'output' for session folders
+        if not found_path:
+            output_dir = Path.cwd() / "output"
+            if output_dir.exists():
+                # Use rglob to find the file in any subdirectory of output
+                candidates = list(output_dir.rglob(normalized_file_path.name))
+                if candidates:
+                    found_path = candidates[0]  # Use the first match
+
+        if not found_path:
+            raise HTTPException(status_code=404, detail=f"File not found in any allowed directory: {file_path}")
+
+        file_path_obj = found_path.resolve()
+        
+        # Check if the final resolved path is within allowed directories
+        allowed_dirs_resolved = [d.resolve() for d in search_dirs]
+        is_allowed = any(
+            str(file_path_obj).startswith(str(allowed_dir))
+            for allowed_dir in allowed_dirs_resolved
+        )
+
+        if not is_allowed:
+            raise HTTPException(status_code=403, detail="Access to this file is not allowed")
+
+        if not file_path_obj.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        # Read file content
+        try:
+            with open(file_path_obj, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            with open(file_path_obj, 'r', encoding='latin-1') as f:
+                content = f.read()
+
+        # Detect file type for syntax highlighting
+        file_extension = file_path_obj.suffix.lower()
+        language_map = {
+            '.py': 'python',
+            '.js': 'javascript',
+            '.ts': 'typescript',
+            '.jsx': 'jsx',
+            '.tsx': 'tsx',
+            '.html': 'html',
+            '.css': 'css',
+            '.json': 'json',
+            '.md': 'markdown',
+            '.yml': 'yaml',
+            '.yaml': 'yaml',
+            '.xml': 'xml',
+            '.sh': 'bash',
+            '.sql': 'sql',
+            '.txt': 'text'
+        }
+        language = language_map.get(file_extension, 'text')
+
+        return {
+            "file_path": str(file_path_obj),
+            "content": content,
+            "language": language,
+            "size": len(content),
+            "lines": len(content.splitlines())
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error viewing file: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     print("🚀 Starting Multi-Agent Expert System API Server...")

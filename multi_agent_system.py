@@ -17,6 +17,7 @@ import subprocess
 import ast
 from pathlib import Path
 import re
+import difflib
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -39,6 +40,26 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Path for sandboxing. All file operations will be restricted to this directory.
 _secure_base_dir = Path(OUTPUT_DIR).resolve()
 
+# Copy test_sandbox if it exists for PLANNER examples
+def setup_test_sandbox():
+    """Copy test_sandbox directory to output directory for PLANNER examples"""
+    import shutil
+    current_dir = Path(__file__).parent
+    test_sandbox_src = current_dir / "test_sandbox"
+    test_sandbox_dest = _secure_base_dir / "test_sandbox"
+
+    if test_sandbox_src.exists() and test_sandbox_src.is_dir():
+        try:
+            if test_sandbox_dest.exists():
+                shutil.rmtree(test_sandbox_dest)
+            shutil.copytree(test_sandbox_src, test_sandbox_dest)
+            print(f"📁 Copied test_sandbox to output directory for examples")
+        except Exception as e:
+            print(f"⚠️  Failed to copy test_sandbox: {e}")
+
+# Setup test environment
+setup_test_sandbox()
+
 # Informative print for server logs
 print(f"🗂️  Output directory for this session: {OUTPUT_DIR}")
 
@@ -58,16 +79,22 @@ EXPERT_DEFINITIONS = {
         "tools": []  # Coordinator doesn't use tools directly
     },
     "CodeGenerator": {
-        "name": "Code Generator", 
+        "name": "Code Generator",
         "description": "Generates code solutions based on requirements and specifications",
         "icon": "⚡",
         "tools": ["write_file", "find_and_replace_in_file", "read_file", "list_directory", "execute_bash_command"]
     },
     "CodeReviewer": {
         "name": "Code Reviewer",
-        "description": "Reviews code quality, security, and adherence to best practices", 
+        "description": "Reviews code quality, security, and adherence to best practices",
         "icon": "🔎",
         "tools": ["read_file", "list_directory", "find_and_replace_in_file", "execute_bash_command"]
+    },
+    "Planner": {
+        "name": "Planner",
+        "description": "Analyzes complex tasks and creates detailed execution plans with file system awareness",
+        "icon": "📋",
+        "tools": ["read_file", "list_directory", "execute_safe_bash"]
     }
 }
 
@@ -79,31 +106,87 @@ def _get_safe_path(file_path: str) -> Path:
     """
     # Normalize and resolve the path
     safe_path = (_secure_base_dir / file_path).resolve()
-    
+
     # Check if the resolved path is within the secure base directory
     if not str(safe_path).startswith(str(_secure_base_dir)):
         raise ValueError(f"Path traversal attempt detected. Access to '{file_path}' is denied.")
-    
+
     return safe_path
+
+# --- Diff Helper ---
+def _generate_diff(before_content: str, after_content: str, file_path: str) -> Dict[str, Any]:
+    """
+    Generate diff information between before and after content.
+
+    Returns:
+        Dict containing diff text, added lines, removed lines, and statistics
+    """
+    before_lines = before_content.splitlines(keepends=True)
+    after_lines = after_content.splitlines(keepends=True)
+
+    # Generate unified diff
+    diff_lines = list(difflib.unified_diff(
+        before_lines,
+        after_lines,
+        fromfile=f"a/{file_path}",
+        tofile=f"b/{file_path}",
+        lineterm=""
+    ))
+
+    # Count added and removed lines
+    added_lines = sum(1 for line in diff_lines if line.startswith('+') and not line.startswith('+++'))
+    removed_lines = sum(1 for line in diff_lines if line.startswith('-') and not line.startswith('---'))
+
+    return {
+        "diff_text": ''.join(diff_lines),
+        "added_lines": added_lines,
+        "removed_lines": removed_lines,
+        "total_changes": added_lines + removed_lines
+    }
 
 # --- Core Development Tools ---
 
 @tool
-def read_file(file_path: str) -> str:
+def read_file(
+    file_path: str,
+    start_line_one_indexed: int | None = None,
+    end_line_one_indexed_inclusive: int | None = None
+) -> str:
     """
-    Read and analyze the contents of any file. Use this to examine existing code, configuration files, or any text-based files. Can read from the current output directory or any accessible file path.
-    
+    Read and analyze file contents. Can read the entire file or a specific line range.
+    Use this to examine existing code, config files, or any text-based files.
+
     Args:
-        file_path: Path to the file to read (relative paths will check output directory first)
-        
+        file_path: Path to the file to read.
+        start_line_one_indexed: Optional: The 1-indexed line number to start reading from.
+        end_line_one_indexed_inclusive: Optional: The 1-indexed line number to end reading at (inclusive).
+
     Returns:
-        String containing the file contents
+        String containing the file contents or the specified line range.
     """
     try:
         safe_path = _get_safe_path(file_path)
         with open(safe_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return f"File contents of {file_path}:\n\n{content}"
+            lines = f.readlines()
+        
+        if start_line_one_indexed is not None and end_line_one_indexed_inclusive is not None:
+            # Adjust for 0-based indexing
+            start_idx = start_line_one_indexed - 1
+            end_idx = end_line_one_indexed_inclusive
+            
+            # Clamp values to be within bounds
+            start_idx = max(0, start_idx)
+            end_idx = min(len(lines), end_idx)
+            
+            if start_idx >= end_idx:
+                return f"Error: Invalid line range for {file_path}. Start line must be before end line."
+
+            content = "".join(lines[start_idx:end_idx])
+            return f"File contents of {file_path} (lines {start_line_one_indexed}-{end_line_one_indexed_inclusive}):\n\n{content}"
+        else:
+            content = "".join(lines)
+            return f"File contents of {file_path} (entire file):\n\n{content}"
+            
     except Exception as e:
         return f"Error reading file {file_path}: {str(e)}"
 
@@ -111,64 +194,145 @@ def read_file(file_path: str) -> str:
 def write_file(file_path: str, content: str) -> str:
     """
     Create a new file with specified content in the output directory. Use this for creating new code files, documentation, or any text files. Files are automatically organized in timestamped session directories.
-    
+
     Args:
         file_path: Name/path of the file to create (will be placed in output directory)
         content: Complete content to write to the file
-        
+
     Returns:
-        Success/error message
+        A JSON string with the result of the file operation.
     """
     try:
         safe_path = _get_safe_path(file_path)
-        
+
+        # Check if file exists before writing
+        file_exists = safe_path.exists()
+        before_content = ""
+
+        if file_exists:
+            # Read existing content for diff
+            try:
+                with open(safe_path, 'r', encoding='utf-8') as f:
+                    before_content = f.read()
+            except Exception:
+                before_content = ""
+
         # Create parent directories if they don't exist
         safe_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # Write the new content
         with open(safe_path, 'w', encoding='utf-8') as f:
             f.write(content)
-        return f"Successfully wrote to {file_path}"
+
+        # Verify the file was written correctly
+        try:
+            with open(safe_path, 'r', encoding='utf-8') as f:
+                actual_content = f.read()
+        except Exception:
+            actual_content = ""
+
+        if file_exists:
+            # Generate diff for existing file replacement
+            diff_info = _generate_diff(before_content, actual_content, file_path)
+            event_type = "edited_file_full"
+            success_message = f"Successfully replaced content in {file_path}"
+            if diff_info["total_changes"] > 0:
+                success_message += f" (+{diff_info['added_lines']} -{diff_info['removed_lines']} lines)"
+            else:
+                success_message += " (no changes detected)"
+            
+            result_data = {
+                "message": success_message,
+                "file_path": file_path,
+                "operation": event_type,
+                "before_content": before_content,
+                "after_content": actual_content,
+                "diff": diff_info,
+                "success": diff_info["total_changes"] > 0 or before_content != actual_content
+            }
+        else:
+            # New file creation
+            event_type = "created_file"
+            success_message = f"Successfully created {file_path}"
+            if len(actual_content.splitlines()) > 0:
+                success_message += f" ({len(actual_content.splitlines())} lines)"
+            
+            result_data = {
+                "message": success_message,
+                "file_path": file_path,
+                "operation": event_type,
+                "content": actual_content,
+                "success": len(actual_content) > 0
+            }
+        return json.dumps(result_data)
+
     except Exception as e:
-        return f"Error writing to file {file_path}: {str(e)}"
+        return json.dumps({"error": f"Error writing to file {file_path}: {str(e)}", "success": False})
 
 @tool
 def find_and_replace_in_file(file_path: str, find_text: str, replace_text: str, use_regex: bool = False) -> str:
     """
     Modify existing files by finding and replacing text. This is the PREFERRED method for editing existing files rather than rewriting them. Uses literal text matching by default (safe for code with special characters like parentheses). Set use_regex=True only when you need regex patterns. Use this to add comments, fix bugs, or make incremental changes.
-    
+
     Args:
         file_path: Path to the file to modify
         find_text: Exact text to find (literal matching by default)
         replace_text: Text to replace with
         use_regex: Optional: set to True for regex pattern matching (default: False)
-        
+
     Returns:
-        Success/error message with number of replacements made
+        A JSON string with the result of the file operation.
     """
     try:
         safe_path = _get_safe_path(file_path)
-        
-        # Read the file
+
+        # Read the original file content
         with open(safe_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
+            before_content = f.read()
+
         # Perform replacement
         if use_regex:
             # Use regex mode
-            new_content = re.sub(find_text, replace_text, content)
-            replacements = len(re.findall(find_text, content))
+            new_content = re.sub(find_text, replace_text, before_content)
+            replacements = len(re.findall(find_text, before_content))
         else:
             # Use literal string replacement (default)
-            new_content = content.replace(find_text, replace_text)
-            replacements = content.count(find_text)
-        
+            new_content = before_content.replace(find_text, replace_text)
+            replacements = before_content.count(find_text)
+
         # Write back to file
         with open(safe_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
-        
-        return f"Successfully made {replacements} replacements in {file_path}"
+
+        # Verify the file was written correctly
+        try:
+            with open(safe_path, 'r', encoding='utf-8') as f:
+                actual_content = f.read()
+        except Exception:
+            actual_content = new_content
+
+        # Generate diff information
+        diff_info = _generate_diff(before_content, actual_content, file_path)
+
+        success_message = f"Successfully made {replacements} replacements in {file_path}"
+        if diff_info["total_changes"] > 0:
+            success_message += f" (+{diff_info['added_lines']} -{diff_info['removed_lines']} lines)"
+        else:
+            success_message += " (no changes detected)"
+            
+        result_data = {
+            "message": success_message,
+            "file_path": file_path,
+            "operation": "edited_file_diff",
+            "before_content": before_content,
+            "after_content": actual_content,
+            "diff": diff_info,
+            "success": diff_info["total_changes"] > 0
+        }
+        return json.dumps(result_data)
+
     except Exception as e:
-        return f"Error in find and replace for {file_path}: {str(e)}"
+        return json.dumps({"error": f"Error in find and replace for {file_path}: {str(e)}", "success": False})
 
 @tool
 def list_directory(directory_path: str = ".") -> str:
@@ -252,6 +416,8 @@ class MultiAgentState(TypedDict):
     tool_call_count: int  # Track total tool calls
     tool_call_history: List[Dict[str, Any]]  # Track tool call history for deduplication
     recent_files: List[str]  # Track recently created/modified files
+    file_operation_events: List[Dict[str, Any]]  # Track file operation events for frontend display
+    terminal_events: List[Dict[str, Any]]  # Track terminal events for frontend display
 
 # --- Expert Agents ---
 
@@ -299,16 +465,21 @@ def coordinator_node(state: MultiAgentState):
 Available experts:
 - **CodeGenerator**: Best for creating, writing, implementing, and generating code solutions
 - **CodeReviewer**: Best for reviewing, analyzing, checking, and validating existing code
+- **Planner**: Best for analyzing complex tasks, creating execution plans, gathering information, and breaking down multi-step projects
 
 Based on the user's request, you must respond with ONLY the name of the most appropriate expert.
-Your response must be either: CodeGenerator or CodeReviewer
+Your response must be either: CodeGenerator, CodeReviewer, or Planner
 
 Examples:
 - "Write a Python function" → CodeGenerator
-- "Create a web scraper" → CodeGenerator  
+- "Create a web scraper" → CodeGenerator
 - "Review this code" → CodeReviewer
 - "Check for bugs in my function" → CodeReviewer
-- "Analyze the code quality" → CodeReviewer"""
+- "Analyze the code quality" → CodeReviewer
+- "Create a plan for this project" → Planner
+- "Analyze the current system and suggest improvements" → Planner
+- "Break down this complex task into steps" → Planner
+- "What files are in this directory and what do they do?" → Planner"""
     
     # Create messages for routing
     routing_messages = [
@@ -332,7 +503,7 @@ Examples:
         logger.info(f"🎯 Coordinator routing to: {expert_choice}")
         
         # Validate expert choice
-        valid_experts = ["CodeGenerator", "CodeReviewer"]
+        valid_experts = ["CodeGenerator", "CodeReviewer", "Planner"]
         if expert_choice not in valid_experts:
             logger.warning(f"⚠️ Invalid expert choice '{expert_choice}', defaulting to CodeGenerator")
             expert_choice = "CodeGenerator"
@@ -378,6 +549,7 @@ def code_generator_node(state: MultiAgentState):
     - Modifying and improving existing code
 
     IMPORTANT PRINCIPLES:
+    - **CRITICAL: When you need to make multiple changes to a file (e.g., adding comments to multiple test cases), perform all edits in a single turn by calling the `find_and_replace_in_file` tool multiple times for each change. Do not make just one change and wait for the result. Complete all required edits at once.**
     - Prefer modifying existing files over rewriting them completely
     - The conversation history contains file contents from previous operations
     - Test your code after creating or modifying it
@@ -446,6 +618,7 @@ def code_reviewer_node(state: MultiAgentState):
     - Improving code quality and maintainability
     
     IMPORTANT PRINCIPLES:
+    - **CRITICAL: When you need to make multiple changes to a file (e.g., adding comments to multiple test cases), perform all edits in a single turn by calling the `find_and_replace_in_file` tool multiple times for each change. Do not make just one change and wait for the result. Complete all required edits at once.**
     - Be proactive in finding and analyzing code
     - The conversation history contains file contents from previous operations
     - Test code after making changes to ensure it still works
@@ -499,6 +672,73 @@ def code_reviewer_node(state: MultiAgentState):
             "debug_info": [{"error": str(e), "node": "code_reviewer"}]
         }
 
+def planner_node(state: MultiAgentState):
+    """Planner node that analyzes tasks and creates detailed execution plans."""
+    logger.info("📋 PLANNER starting task analysis")
+
+    # Import PLANNER tools and functions
+    try:
+        from planner_node import (
+            read_file as planner_read_file,
+            list_directory as planner_list_directory,
+            execute_safe_bash,
+            get_planner_system_prompt
+        )
+    except ImportError:
+        error_msg = AIMessage(content="PLANNER node is not available. Please ensure planner_node.py is in the same directory.")
+        return {
+            "messages": [error_msg],
+            "debug_info": [{"error": "Import error", "node": "planner"}]
+        }
+
+    # Get system prompt (default to comprehensive planning)
+    system_prompt = get_planner_system_prompt("comprehensive")
+
+    model_name = os.getenv("LLM_MODEL", "openai/gpt-4o")
+    model = create_llm_client(model_name)
+    tools = [planner_read_file, planner_list_directory, execute_safe_bash]
+    model_with_tools = model.bind_tools(tools)
+
+    try:
+        is_anthropic = "anthropic" in model_name.lower() or "claude" in model_name.lower()
+
+        # Prepare messages for planner
+        messages_for_planner = [SystemMessage(content=system_prompt)] + state["messages"]
+
+        # Output complete prompt
+        logger.info("🔍 PLANNER PROMPT:")
+        for i, msg in enumerate(messages_for_planner):
+            if hasattr(msg, 'content'):
+                content = str(msg.content)
+                logger.info(f"  Message {i+1} ({type(msg).__name__}): {content[:500]}{'...' if len(content) > 500 else ''}")
+        logger.info("-------------------------------- END OF PLANNER PROMPT --------------------------------")
+
+        # Ensure Anthropic compatibility (no empty assistant content)
+        safe_messages = _ensure_nonempty_assistant(messages_for_planner) if is_anthropic else messages_for_planner
+        response = model_with_tools.invoke(safe_messages)
+
+        response_content = str(response.content)
+        debug_info = {
+            "timestamp": datetime.now().isoformat(),
+            "node": "planner",
+            "has_tool_calls": isinstance(response, AIMessage) and bool(response.tool_calls),
+            "response_preview": response_content[:100] + "..." if len(response_content) > 100 else response_content,
+            "response_full": response_content,
+            "prompt": [msg.dict() for msg in messages_for_planner]
+        }
+
+        return {
+            "messages": [response],
+            "debug_info": [debug_info]
+        }
+
+    except Exception as e:
+        error_msg = AIMessage(content=f"PLANNER encountered an error: {str(e)}")
+        return {
+            "messages": [error_msg],
+            "debug_info": [{"error": str(e), "node": "planner"}]
+        }
+
 def tool_executor_node(state: MultiAgentState):
     """Executes tool calls and returns results."""
     if not state["messages"]:
@@ -510,13 +750,14 @@ def tool_executor_node(state: MultiAgentState):
 
     logger.info(f"🔧 Tool executor processing {len(last_message.tool_calls)} tool calls")
 
-    # Initialize counters if not exists
-    if "tool_call_count" not in state:
-        state["tool_call_count"] = 0
-    if "tool_call_history" not in state:
-        state["tool_call_history"] = []
-    if "tool_failures" not in state:
-        state["tool_failures"] = {}
+    # Initialize state fields if they don't exist
+    state.setdefault("tool_call_count", 0)
+    state.setdefault("tool_call_history", [])
+    state.setdefault("tool_failures", {})
+    
+    # These will hold events generated ONLY during this execution run
+    new_file_operation_events = []
+    new_terminal_events = []
 
     # Check total tool call limit
     MAX_TOTAL_TOOL_CALLS = 15  # Prevent infinite loops
@@ -570,37 +811,65 @@ def tool_executor_node(state: MultiAgentState):
                     "list_directory": list_directory,
                     "execute_bash_command": execute_bash_command
                 }
+
+                # Add PLANNER tools if available
+                try:
+                    from planner_node import (
+                        read_file as planner_read_file,
+                        list_directory as planner_list_directory,
+                        execute_safe_bash
+                    )
+                    available_tools.update({
+                        "execute_safe_bash": execute_safe_bash
+                    })
+                    # Note: PLANNER uses same names for read_file and list_directory
+                    # but with different implementations, so we keep the original ones
+                except ImportError:
+                    logger.warning("PLANNER tools not available for tool execution")
                 
                 if tool_name in available_tools:
+                    # No longer need to pre-read files here, the tool handles it
                     tool_function = available_tools[tool_name]
                     result_content = tool_function.invoke(tool_args)
                     logger.info(f"✅ Tool {tool_name} executed successfully")
-                    logger.info(f"📄 Tool Result: {result_content[:200]}{'...' if len(result_content) > 200 else ''}")
                     
-                    # Track recently created/modified files
-                    if tool_name in ["write_file", "find_and_replace_in_file"] and "file_path" in tool_args:
-                        file_path = tool_args["file_path"]
-                        if "recent_files" not in state:
-                            state["recent_files"] = []
-                        if file_path not in state["recent_files"]:
-                            state["recent_files"].append(file_path)
-                            # Keep only last 10 files
-                            if len(state["recent_files"]) > 10:
-                                state["recent_files"] = state["recent_files"][-10:]
+                    # Try to parse the result as JSON for file/terminal operations
+                    try:
+                        result_data = json.loads(result_content)
+                        is_structured_result = isinstance(result_data, dict) and "success" in result_data
+                    except (json.JSONDecodeError, TypeError):
+                        is_structured_result = False
+
+                    if is_structured_result:
+                        # This is a structured result from a file or terminal tool
+                        # Add tool_call_id for frontend tracking
+                        result_data["tool_call_id"] = tool_id
+                        
+                        if result_data.get("operation"): # File operation
+                             new_file_operation_events.append({ "type": "file_operation", **result_data })
+                        elif result_data.get("command"): # Terminal operation
+                            new_terminal_events.append({ "type": "terminal", **result_data })
+                        
+                        # The message for the LLM should be the summary message
+                        result_content_for_llm = result_data.get("message", "Operation successful.")
+                    else:
+                        # This is a simple string result from other tools (e.g., list_directory)
+                        result_content_for_llm = result_content
+
                 else:
-                    result_content = f"Unknown tool: {tool_name}"
+                    result_content_for_llm = f"Unknown tool: {tool_name}"
                     logger.error(f"❌ Unknown tool: {tool_name}")
                     
             except Exception as e:
                 logger.error(f"❌ Tool {tool_name} failed with error: {str(e)}")
-                result_content = f"Tool {tool_name} failed: {str(e)}"
+                result_content_for_llm = f"Tool {tool_name} failed: {str(e)}"
                 
                 # Increment failure count
                 state["tool_failures"][failure_key] = failure_count + 1
 
         # Create tool result message
         tool_message = ToolMessage(
-            content=result_content,
+            content=result_content_for_llm,
             tool_call_id=tool_id
         )
         tool_results.append(tool_message)
@@ -610,7 +879,7 @@ def tool_executor_node(state: MultiAgentState):
             "signature": tool_signature,
             "tool_name": tool_name,
             "timestamp": datetime.now().isoformat(),
-            "success": "failed" not in result_content.lower()
+            "success": "failed" not in result_content_for_llm.lower()
         })
         
         # Increment total tool call count
@@ -626,7 +895,9 @@ def tool_executor_node(state: MultiAgentState):
         "tool_call_count": state["tool_call_count"],
         "tool_call_history": state["tool_call_history"],
         "tool_failures": state["tool_failures"],
-        "recent_files": state.get("recent_files", [])
+        "recent_files": state.get("recent_files", []),
+        "file_operation_events": new_file_operation_events,
+        "terminal_events": new_terminal_events,
     }
 
 # --- Graph Routing Logic ---
@@ -636,7 +907,8 @@ def route_to_expert(state: MultiAgentState) -> str:
     expert = state.get("current_expert", "CodeGenerator")
     expert_map = {
         "CodeGenerator": "code_generator",
-        "CodeReviewer": "code_reviewer"
+        "CodeReviewer": "code_reviewer",
+        "Planner": "planner"
     }
     return expert_map.get(expert, "code_generator")
 
@@ -660,6 +932,7 @@ def create_multi_agent_graph():
     workflow.add_node("coordinator", coordinator_node)
     workflow.add_node("code_generator", code_generator_node)
     workflow.add_node("code_reviewer", code_reviewer_node)
+    workflow.add_node("planner", planner_node)
     workflow.add_node("tool_executor", tool_executor_node)
 
     # Set entry point
@@ -671,12 +944,13 @@ def create_multi_agent_graph():
         route_to_expert,
         {
             "code_generator": "code_generator",
-            "code_reviewer": "code_reviewer"
+            "code_reviewer": "code_reviewer",
+            "planner": "planner"
         }
     )
 
     # Each expert can either call tools or end
-    for expert in ["code_generator", "code_reviewer"]:
+    for expert in ["code_generator", "code_reviewer", "planner"]:
         workflow.add_conditional_edges(
             expert,
             should_continue,
@@ -689,7 +963,8 @@ def create_multi_agent_graph():
         route_to_expert,
         {
             "code_generator": "code_generator",
-            "code_reviewer": "code_reviewer"
+            "code_reviewer": "code_reviewer",
+            "planner": "planner"
         }
     )
 
@@ -731,7 +1006,9 @@ def run_multi_agent_query_stream(messages: List[Dict[str, Any]]):
         "tool_failures": {},
         "tool_call_count": 0,
         "tool_call_history": [],
-        "recent_files": []
+        "recent_files": [],
+        "file_operation_events": [],
+        "terminal_events": []
     }
     
     # helper for unique ids
@@ -788,8 +1065,10 @@ def run_multi_agent_query_stream(messages: List[Dict[str, Any]]):
         # Execute the appropriate expert
         if expert_used == "CodeGenerator":
             expert_result = code_generator_node(state)
-        else:
+        elif expert_used == "CodeReviewer":
             expert_result = code_reviewer_node(state)
+        else:  # Planner
+            expert_result = planner_node(state)
         
         # Update state with expert result
         if "messages" in expert_result:
@@ -805,59 +1084,90 @@ def run_multi_agent_query_stream(messages: List[Dict[str, Any]]):
             if isinstance(last_msg, AIMessage):
                 # If AI wants to call tools
                 if last_msg.tool_calls:
-                    for tool_call in last_msg.tool_calls:
-                        message_counter += 1
-                        yield {
-                            "type": "message",
-                            "message": {
-                                "id": _new_id(),
-                                "type": "tool_call",
-                                "content": "",  # Empty content, let frontend handle the display
-                                "expert": expert_used,
-                                "expert_icon": expert_icon,
-                                "timestamp": datetime.now().isoformat(),
-                                "tool_name": tool_call["name"],
-                                "tool_args": tool_call["args"],
-                                "prompt": prompt_snapshot
-                            }
-                        }
-                    
-                    # Execute tools
+                    # Execute tools first
                     logger.info("🔧 Executing tools")
                     tool_result = tool_executor_node(state)
-                    
+
                     # Update state with tool results
                     if "messages" in tool_result:
                         state["messages"] = state["messages"] + tool_result["messages"]
-                        
-                        # Emit tool results for each tool message
-                        for tool_msg in tool_result["messages"]:
-                            if isinstance(tool_msg, ToolMessage):
-                                # Find the corresponding tool call to get the tool name
-                                corresponding_tool_name = "unknown"
-                                for tool_call in last_msg.tool_calls:
-                                    if tool_call["id"] == tool_msg.tool_call_id:
-                                        corresponding_tool_name = tool_call["name"]
+
+                        # Create combined tool call events for each tool
+                        for i, tool_call in enumerate(last_msg.tool_calls):
+                            tool_name = tool_call["name"]
+                            tool_args = tool_call["args"]
+                            tool_id = tool_call["id"]
+
+                            # Find the corresponding tool result
+                            tool_result_content = ""
+                            for tool_msg in tool_result["messages"]:
+                                if isinstance(tool_msg, ToolMessage) and tool_msg.tool_call_id == tool_id:
+                                    tool_result_content = tool_msg.content
+                                    break
+
+                            # Determine if this is a file operation or terminal tool
+                            if tool_name in ["write_file", "find_and_replace_in_file"]:
+                                # Find the corresponding file event from the new events
+                                file_event = None
+                                file_events_list = cast(List[Dict[str, Any]], tool_result.get("file_operation_events", []))
+                                for ev in file_events_list:
+                                    if ev.get("tool_call_id") == tool_id:
+                                        file_event = ev
                                         break
-                                
+
+                                if file_event:
+                                    message_counter += 1
+                                    # Create enhanced file operation event with prompt and args
+                                    enhanced_event = dict(file_event)
+                                    enhanced_event["prompt"] = prompt_snapshot
+                                    enhanced_event["tool_args"] = tool_args
+                                    enhanced_event["timestamp"] = datetime.now().isoformat()
+                                    yield enhanced_event
+
+                            elif tool_name in ["execute_bash_command", "execute_safe_bash"]:
+                                # Find the corresponding terminal event from the new events
+                                terminal_event = None
+                                terminal_events_list = cast(List[Dict[str, Any]], tool_result.get("terminal_events", []))
+                                for ev in terminal_events_list:
+                                    if ev.get("tool_call_id") == tool_id:
+                                        terminal_event = ev
+                                        break
+
+                                if terminal_event:
+                                    message_counter += 1
+                                    # Create enhanced terminal event with prompt and args
+                                    enhanced_event = dict(terminal_event)
+                                    enhanced_event["prompt"] = prompt_snapshot
+                                    enhanced_event["tool_args"] = tool_args
+                                    enhanced_event["timestamp"] = datetime.now().isoformat()
+                                    yield enhanced_event
+
+                            else:
+                                # For other tools, create a generic tool call event
                                 message_counter += 1
                                 yield {
-                                    "type": "message",
-                                    "message": {
-                                        "id": _new_id(),
-                                        "type": "tool_result",
-                                        "content": tool_msg.content,
-                                        "expert": expert_used,
-                                        "expert_icon": expert_icon,
-                                        "timestamp": datetime.now().isoformat(),
-                                        "tool_name": corresponding_tool_name
-                                    }
+                                    "type": "tool_call",
+                                    "tool_name": tool_name,
+                                    "command": f"{tool_name}({', '.join(f'{k}={v}' for k, v in tool_args.items())})",
+                                    "result": tool_result_content,
+                                    "success": "error" not in str(tool_result_content).lower(),
+                                    "timestamp": datetime.now().isoformat(),
+                                    "prompt": prompt_snapshot,
+                                    "tool_args": tool_args
                                 }
                     
                     # Update other state fields safely
                     for key in ["tool_failures", "tool_call_count", "tool_call_history", "recent_files"]:
                         if key in tool_result:
                             state[key] = tool_result[key]
+                    
+                    # Manually update the state's event history with the new events
+                    if "file_operation_events" in tool_result:
+                        events_to_add = cast(List[Dict[str, Any]], tool_result["file_operation_events"])
+                        state.get("file_operation_events", []).extend(events_to_add)
+                    if "terminal_events" in tool_result:
+                        events_to_add = cast(List[Dict[str, Any]], tool_result["terminal_events"])
+                        state.get("terminal_events", []).extend(events_to_add)
                     
                     # Continue to next iteration for AI to process tool results
                     continue

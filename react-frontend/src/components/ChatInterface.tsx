@@ -3,70 +3,77 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Send, Bot, Brain, Settings, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
+
 import { v4 as uuidv4 } from 'uuid'
 import { fetchEventSource } from '@microsoft/fetch-event-source'
-
-const MarkdownRenderer = ({ content }: { content: string }) => {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        code({ inline, className, children, ...props }: React.HTMLAttributes<HTMLElement> & { inline?: boolean }) {
-          const match = /language-(\w+)/.exec(className || '')
-          return !inline && match ? (
-            <SyntaxHighlighter
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              style={vscDarkPlus as any}
-              language={match[1]}
-              PreTag="div"
-              {...props}
-            >
-              {String(children).replace(/\n$/, '')}
-            </SyntaxHighlighter>
-          ) : (
-            <code className={className} {...props}>
-              {children}
-            </code>
-          )
-        }
-      }}
-    >
-      {content}
-    </ReactMarkdown>
-  )
-}
+import { FileOperationCard } from './FileOperationCard'
+import { TerminalCard } from './TerminalCard'
+import { ToolCallCard } from './ToolCallCard'
+import { AIMessageCard } from './AIMessageCard'
+import { MarkdownRenderer } from './MarkdownRenderer'
 
 interface EventData {
   type: string
+  timestamp?: string
   message?: {
     id: string
-    type: 'user' | 'agent' | 'tool_call' | 'tool_result' | 'routing'
+    type: 'user' | 'agent' | 'routing'
     content: string
     expert?: string
     expert_icon?: string
     timestamp: string
+    prompt?: { role: string; content: string }[]
     tool_name?: string
     tool_args?: Record<string, unknown>
-    prompt?: { role: string; content: string }[]
   }
+  // File operation event fields
+  operation?: 'created_file' | 'edited_file_full' | 'edited_file_diff'
+  file_path?: string
+  success?: boolean
+  content?: string
+  before_content?: string
+  after_content?: string
+  diff?: {
+    diff_text: string
+    added_lines: number
+    removed_lines: number
+    total_changes: number
+  }
+  // Terminal event fields
+  tool_name?: string
+  command?: string
+  result?: string
+  tool_args?: Record<string, unknown>
+  prompt?: { role: string; content: string }[]
   error?: string
   session_id?: string
 }
 
 interface Message {
   id: string
-  type: 'user' | 'agent' | 'tool_call' | 'tool_result' | 'routing'
+  type: 'user' | 'agent' | 'routing' | 'file_operation' | 'terminal' | 'tool_call'
   content: string
   expert?: string
   expert_icon?: string
   timestamp: Date
-  tool_name?: string
-  tool_args?: Record<string, unknown>
   prompt?: { role: string; content: string }[]
+  // File operation fields
+  operation?: 'created_file' | 'edited_file_full' | 'edited_file_diff'
+  file_path?: string
+  success?: boolean
+  before_content?: string
+  after_content?: string
+  diff?: {
+    diff_text: string
+    added_lines: number
+    removed_lines: number
+    total_changes: number
+  }
+  // Terminal fields
+  tool_name?: string
+  command?: string
+  result?: string
+  tool_args?: Record<string, unknown>
 }
 
 interface Expert {
@@ -93,7 +100,7 @@ export function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>(() => [{
     id: '1',
     type: 'agent',
-    content: 'Hello! I\'m your Code Agent System. I have two specialists ready to help you: **CodeGenerator** ⚡ for writing code and **CodeReviewer** ✅ for analyzing code quality. What would you like to build today?',
+    content: 'Hello! I\'m your Multi-Agent Code System. I have four specialists ready to help you:\n\n🎯 **Coordinator** - Analyzes your requests and routes them to the right expert\n📋 **Planner** - Analyzes complex tasks and creates detailed execution plans\n⚡ **CodeGenerator** - Writes and generates code solutions\n🔎 **CodeReviewer** - Reviews code quality and best practices\n\nWhat would you like to build today?',
     expert: 'System',
     expert_icon: '🤖',
     timestamp: new Date()
@@ -173,7 +180,7 @@ export function ChatInterface() {
     setMessages([{
       id: '1',
       type: 'agent',
-      content: 'Hello! I\'m your Code Agent System. I have two specialists ready to help you: **CodeGenerator** ⚡ for writing code and **CodeReviewer** ✅ for analyzing code quality. What would you like to build today?',
+      content: 'Hello! I\'m your Multi-Agent Code System. I have four specialists ready to help you:\n\n🎯 **Coordinator** - Analyzes your requests and routes them to the right expert\n📋 **Planner** - Analyzes complex tasks and creates detailed execution plans\n⚡ **CodeGenerator** - Writes and generates code solutions\n🔎 **CodeReviewer** - Reviews code quality and best practices\n\nWhat would you like to build today?',
       expert: 'System',
       expert_icon: '🤖',
       timestamp: new Date()
@@ -228,6 +235,51 @@ export function ChatInterface() {
                   prompt: eventData.message.prompt as unknown as {role:string;content:string}[]
                 }
                 setMessages(prev => [...prev, newMessage])
+              } else if (eventData.type === 'file_operation') {
+                const fileOperationMessage: Message = {
+                  id: uuidv4(),
+                  type: 'file_operation',
+                  content: eventData.content || '',
+                  timestamp: new Date(eventData.timestamp || new Date().toISOString()),
+                  operation: eventData.operation,
+                  file_path: eventData.file_path,
+                  success: eventData.success,
+                  before_content: eventData.before_content,
+                  after_content: eventData.after_content,
+                  diff: eventData.diff,
+                  prompt: eventData.prompt,
+                  tool_args: eventData.tool_args,
+                }
+                setMessages(prev => [...prev, fileOperationMessage])
+              } else if (eventData.type === 'terminal') {
+                const terminalMessage: Message = {
+                  id: uuidv4(),
+                  type: 'terminal',
+                  content: eventData.result || '',
+                  timestamp: new Date(eventData.timestamp || new Date().toISOString()),
+                  tool_name: eventData.tool_name,
+                  command: eventData.command,
+                  result: eventData.result,
+                  success: eventData.success,
+                  tool_args: eventData.tool_args,
+                  prompt: eventData.prompt as unknown as {role:string;content:string}[]
+                }
+                setMessages(prev => [...prev, terminalMessage])
+              } else if (eventData.type === 'tool_call') {
+                // Generic tool call event (for tools that don't have specific UI)
+                const toolCallMessage: Message = {
+                  id: uuidv4(),
+                  type: 'tool_call',
+                  content: eventData.result || '',
+                  timestamp: new Date(eventData.timestamp || new Date().toISOString()),
+                  tool_name: eventData.tool_name,
+                  command: eventData.command,
+                  result: eventData.result,
+                  success: eventData.success,
+                  tool_args: eventData.tool_args,
+                  prompt: eventData.prompt as unknown as {role:string;content:string}[]
+                }
+                setMessages(prev => [...prev, toolCallMessage])
               } else if (eventData.type === 'error') {
                 throw new Error(eventData.error)
               } else if (eventData.type === 'end') {
@@ -297,97 +349,109 @@ export function ChatInterface() {
   // Use useMemo to optimize message rendering
   const renderedMessages = useMemo(() => {
     return messages.map((message) => {
-      const showPrompt = promptStates.get(message.id) || false
       
-      const PromptSection = ({ prompt }: { prompt: { role: string; content: string }[] }) => (
-        <div className="mt-2">
-          <button 
-            className="text-xs underline" 
-            onClick={() => togglePrompt(message.id)}
+      // File operation events are rendered as standalone cards
+      if (message.type === 'file_operation') {
+        return (
+          <motion.div
+            key={message.id}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full mb-3"
           >
-            {showPrompt ? 'Hide Prompt' : 'View Prompt'}
-          </button>
-          {showPrompt && (
-            <div className="mt-1 bg-white/60 rounded p-2 max-h-40 overflow-y-auto text-xs font-mono whitespace-pre-wrap">
-              {JSON.stringify(prompt, null, 2)}
-            </div>
-          )}
-        </div>
-      )
-      
+            <FileOperationCard
+              event={{
+                type: 'file_operation',
+                operation: message.operation!,
+                file_path: message.file_path!,
+                success: message.success!,
+                timestamp: message.timestamp.toISOString(),
+                content: message.content,
+                before_content: message.before_content,
+                after_content: message.after_content,
+                diff: message.diff,
+                prompt: message.prompt,
+                tool_args: message.tool_args
+              }}
+            />
+          </motion.div>
+        )
+      }
+
+      // Terminal events are rendered as standalone cards
+      if (message.type === 'terminal') {
+        return (
+          <motion.div
+            key={message.id}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full mb-3"
+          >
+            <TerminalCard
+              event={{
+                type: 'terminal',
+                tool_name: message.tool_name!,
+                command: message.command!,
+                result: message.result!,
+                success: message.success!,
+                timestamp: message.timestamp.toISOString(),
+                prompt: message.prompt,
+                tool_args: message.tool_args
+              }}
+            />
+          </motion.div>
+        )
+      }
+
+      // Generic tool call events
+      if (message.type === 'tool_call') {
+        return (
+          <motion.div
+            key={message.id}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full mb-3"
+          >
+            <ToolCallCard
+              event={{
+                type: 'tool_call',
+                tool_name: message.tool_name!,
+                command: message.command!,
+                result: message.result!,
+                success: message.success!,
+                timestamp: message.timestamp.toISOString(),
+                prompt: message.prompt,
+                tool_args: message.tool_args
+              }}
+            />
+          </motion.div>
+        )
+      }
+
       return (
         <motion.div
           key={message.id}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className={cn(
-            "flex w-full",
-            message.type === 'user' ? 'justify-end' : 'justify-start'
-          )}
+          className="w-full mb-3"
         >
-          <div className={cn(
-            "rounded-2xl px-4 py-3 shadow-sm",
-            message.type === 'user' 
-              ? 'bg-primary text-primary-foreground ml-12 max-w-[80%]' 
-              : 'bg-muted mr-12 max-w-[85%]' 
-          )}>
-            {message.type !== 'user' && (
-              <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                <span className="text-base">{message.expert_icon}</span>
-                <span className="font-medium">{message.expert}</span>
+          {message.type === 'user' ? (
+            <div className="w-full px-3 py-2 rounded-lg shadow-sm bg-primary text-primary-foreground border border-primary/20">
+              <div className="text-sm leading-relaxed">
+                <MarkdownRenderer content={message.content} />
               </div>
-            )}
-            
-            <div className="text-sm leading-relaxed">
-              {message.type === 'tool_call' ? (
-                <div>
-                  {message.prompt && <PromptSection prompt={message.prompt} />}
-                  <div className="p-2 bg-orange-50 border border-orange-200 rounded">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-orange-600">🔧</span>
-                      <span className="text-xs text-orange-700 font-medium">Calling tool: {message.tool_name}</span>
-                    </div>
-                    <details className="mb-2">
-                      <summary className="text-xs cursor-pointer text-orange-600 hover:text-orange-800">
-                        View arguments
-                      </summary>
-                      <div className="mt-1 text-xs bg-white/50 rounded p-2 font-mono">
-                        <pre className="whitespace-pre-wrap">
-                          {JSON.stringify(message.tool_args, null, 2)}
-                        </pre>
-                      </div>
-                    </details>
-                    {message.content && (
-                      <div className="text-sm">
-                        <MarkdownRenderer content={message.content} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : message.type === 'tool_result' ? (
-                <div className="p-3 bg-green-50 border border-green-200 rounded">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-green-600">✅</span>
-                    <span className="text-xs text-green-700 font-medium">Tool Result</span>
-                  </div>
-                  <div className="text-sm bg-white/80 rounded p-2 font-mono text-green-800 max-h-32 overflow-y-auto">
-                    <pre className="whitespace-pre-wrap">
-                      {message.content}
-                    </pre>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {message.prompt && <PromptSection prompt={message.prompt} />}
-                  <MarkdownRenderer content={message.content} />
-                </>
-              )}
+              <div className="text-xs opacity-60 mt-1">
+                {message.timestamp.toLocaleTimeString()}
+              </div>
             </div>
-            
-            <div className="text-xs opacity-60 mt-2">
-              {message.timestamp.toLocaleTimeString()}
-            </div>
-          </div>
+          ) : (
+            <AIMessageCard
+              content={message.content}
+              expert={message.expert}
+              expert_icon={message.expert_icon}
+              prompt={message.prompt}
+            />
+          )}
         </motion.div>
       )
     })
@@ -557,7 +621,7 @@ export function ChatInterface() {
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
           <AnimatePresence>
             {renderedMessages}
           </AnimatePresence>
@@ -568,7 +632,7 @@ export function ChatInterface() {
               animate={{ opacity: 1 }}
               className="flex justify-start"
             >
-              <div className="bg-muted rounded-2xl px-4 py-3 mr-12 max-w-[85%]">
+              <div className="bg-muted rounded-2xl px-3 py-2 mr-12 max-w-[85%]">
                 <div className="flex items-center gap-2">
                   <div className="flex space-x-1">
                     <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" />
@@ -585,22 +649,22 @@ export function ChatInterface() {
         </div>
 
         {/* Input Area */}
-        <div className="border-t p-6">
-          <form onSubmit={(e) => { e.preventDefault(); sendMessage(); }} className="flex gap-3">
+        <div className="border-t p-4">
+          <form onSubmit={(e) => { e.preventDefault(); sendMessage(); }} className="flex gap-2">
             <div className="flex-1 relative">
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Ask our code agents to write or review code..."
                 disabled={isLoading}
-                className="w-full px-4 py-3 border rounded-xl bg-background focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
+                className="w-full px-3 py-2 border rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
               />
             </div>
             <Button 
               type="submit" 
               disabled={isLoading || !input.trim()}
-              size="lg"
-              className="px-6"
+              size="default"
+              className="px-4"
             >
               <Send className="w-4 h-4" />
             </Button>

@@ -40,8 +40,9 @@ This **educational showcase** is designed to help developers understand key aspe
 
 ### 🧠 Specialized Code Agents
 - **⚡ CodeGenerator**: Writes code, implements features, creates files
-- **🔎 CodeReviewer**: Reviews code quality, finds bugs, suggests improvements  
+- **🔎 CodeReviewer**: Reviews code quality, finds bugs, suggests improvements
 - **🎯 Coordinator**: Intelligently routes queries to the right specialist
+- **📋 Planner**: Comprehensive task analysis, planning, and safe information gathering
 
 ### 🛠️ Development Tools
 CodeReviewer and CodeGenerator agents have access to real development tools:
@@ -52,9 +53,10 @@ CodeReviewer and CodeGenerator agents have access to real development tools:
 - `execute_bash_command()` - Run commands and tests
 
 ### 🎨 Real-time Web Interface
-- **Live Chat**: Watch agents work in real-time
+- **Live Chat**: Watch agents work in real-time with markdown formatting
+- **Enhanced Message Display**: Rich rendering of code blocks, diffs, and terminal outputs
 - **Prompt Inspection**: See exactly what each agent is thinking
-- **Tool Execution**: Observe every tool call and result
+- **Tool Execution**: Observe every tool call and result with dedicated UI components
 - **Session History**: Complete conversation preservation
 
 ### 🔍 Full Transparency
@@ -84,6 +86,8 @@ CodeReviewer and CodeGenerator agents have access to real development tools:
 - **UI Components**: A combination of `shadcn/ui` patterns, `Radix UI` primitives for accessibility, and `Lucide` for icons.
 - **Styling**: `Tailwind CSS` for utility-first styling.
 - **Animation**: `Framer Motion` for smooth and delightful animations.
+- **Code Display**: Syntax highlighting with `react-syntax-highlighter` and diff visualization
+- **Markdown**: Full GitHub-flavored markdown support with `react-markdown`
 
 **Communication:**
 - **Real-time Streaming**: `Server-Sent Events (SSE)` to stream agent responses live from the backend to the frontend, using `@microsoft/fetch-event-source` on the client.

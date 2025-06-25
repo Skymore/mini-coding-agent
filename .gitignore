@@ -26,6 +26,7 @@ output/
 react-frontend/node_modules/
 react-frontend/dist/
 react-frontend/.vite/
+react-frontend/*.tsbuildinfo
 
 # OS-specific
 .DS_Store

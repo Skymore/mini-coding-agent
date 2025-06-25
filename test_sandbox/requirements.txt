@@ -1,0 +1,6 @@
+requests==2.31.0
+flask==2.3.3
+pytest==7.4.0
+pydantic==2.4.0
+python-dotenv==1.0.0
+click==8.1.7
