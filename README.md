@@ -274,18 +274,6 @@ output/
     └── ...                  # Other files
 ```
 
-## 🤝 Contributing
-
-This is an educational project. Feel free to:
-1. Fork and experiment with different agent configurations
-2. Add new tools and capabilities
-3. Improve the UI/UX for better learning
-4. Share your modifications and learnings
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## 🆘 Troubleshooting
 
 ### Common Issues
